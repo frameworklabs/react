@@ -1,0 +1,322 @@
+// reactor.blc
+//
+// A simple reaction game for tge M5StickC.
+
+// Constants
+
+@[CConst (binding ="MILLIS_PER_TICK", header = "env.h")]
+extern const MILLIS_PER_TICK: nat32
+
+const DIMM_UP = 0: nat8
+const DIMM_DOWN = 1: nat8
+
+const TIME_TO_FADE = 5000: nat32
+const FADE_DURATION = 5000: nat32
+
+const SCORE_STATE_NOT_STARTED = 0: nat8
+const SCORE_STATE_OK = 1: nat8
+const SCORE_STATE_TOO_EARLY = 2: nat8
+const SCORE_STATE_TOO_LATE = 3: nat8
+
+const PRESENT_HELP = 0: nat8
+const PRESENT_PLAY = 1: nat8
+const PRESENT_HIGHSCORE = 2: nat8
+
+// Types
+
+/// Captures the score of a game play.
+struct Score
+    var state: nat8
+    var waitTime: nat32
+    var reactionTime: nat32 
+end
+
+// Helpers
+
+@[CFunction (source = "env.h")]
+extern function makeRandomNat32 (fromIncl: nat32, toExcl: nat32) returns nat32
+        
+/// The output will reflect the input as long as enabled is `true` - `false` otherwise.
+activity BoolGate (inValue: bool, enabled: bool) (outValue: bool)
+    repeat
+        if enabled then
+            outValue = inValue
+        else
+            outValue = false
+        end
+        await true
+    end
+end
+    
+/// Delays the trail for the given period.    
+activity Delay (millis: nat32)
+    var ticks = millis / MILLIS_PER_TICK
+
+    if ticks == 0 then
+        ticks = 1 // Need to wait at least one tick
+    end
+    repeat
+        ticks = ticks - 1
+        await true
+    until ticks == 0 end
+end
+
+/// Keeps track of the time now long it is run.
+activity Timer () (millis: nat32)
+    repeat
+        await true
+        millis = millis + MILLIS_PER_TICK
+    end
+end
+
+@[CFunction (source = "env.h")]
+extern singleton function dimScreen (percentage: nat8)
+
+/// Dimms the screen up or down in the given duration.    
+activity Dimmer (direction: nat8, millis: nat32)
+    var level: int8
+    var increment: int8
+
+    if direction == DIMM_UP then
+        level = 0
+        increment = 1
+    else
+        level = 100
+        increment = -1
+    end
+
+    let stepDuration = millis / 100 // We use 100 steps - calc how long each takes
+    var ticks: nat8 = 0
+    repeat
+        dimScreen(level as! nat8)        
+        run Delay(stepDuration)        
+        level = level + increment
+        ticks = ticks + 1
+    until ticks == 100 end
+    dimScreen(level as! nat8)
+end
+
+/// Dimms down the screen after a specified delay. If button is pressed during dimming, the screen will bright up immediately again.
+activity DimmDownController (buttonPressed: bool, waitTime: nat32, fadeTime: nat32) (didStartDimming: bool)
+    repeat        
+        run Delay(waitTime)
+        didStartDimming = true
+
+        when buttonPressed abort
+            run Dimmer(DIMM_DOWN, fadeTime)
+            await false        
+        end
+
+        dimScreen(100)
+        
+        await true
+        didStartDimming = false
+    end
+end
+
+// When a button press comes, waits for a small duration to see whether a double click comes or not.
+activity DoubleClickController (buttonPressed: bool) returns bool // false for single click, true for double click
+    await buttonPressed
+    when buttonPressed abort
+        run Delay(300)
+        return false
+    end
+    return true
+end
+
+/// Waits for a button press to continue. Optionaly dimms down the screen.
+/// Returns false for single-click, true for double-click
+activity PressToContinueController (buttonPressed: bool, wantsDimming: bool) returns bool
+    var isDoubleClick: bool
+
+    if wantsDimming then
+        var continueButtonPressed: bool
+        var didStartDimming: bool
+
+        cobegin
+            isDoubleClick = run DoubleClickController(continueButtonPressed)
+        with weak
+            run DimmDownController(buttonPressed, TIME_TO_FADE, FADE_DURATION)(didStartDimming)
+        with weak
+            run BoolGate(buttonPressed, not didStartDimming)(continueButtonPressed)
+        end    
+    else
+        isDoubleClick = run DoubleClickController(buttonPressed)
+    end
+
+    return isDoubleClick
+end
+
+// Generic Screens
+
+@[CFunction (source = "env.h")]
+extern function displayCountDownScreen (i: nat8)
+
+/// A transitional screen counting down every second from the given initial value.    
+activity CountDownScreen (counts: nat8)
+    var i = counts
+    repeat
+        displayCountDownScreen(i)
+        run Delay(1000)
+        i = i - 1
+    until i == 0 end
+end
+
+// Splash Screen
+
+@[CFunction (source = "env.h")]
+extern function displaySplashScreen ()
+
+activity SplashScreen ()
+    displaySplashScreen()
+    run Dimmer(DIMM_UP, 5000)
+end
+
+// Start Screen
+
+@[CFunction (source = "env.h")]
+extern function displayStartScreen ()
+
+activity StartScreen () returns nat8
+    @[CInput (binding ="buttonPressed", header = "env.h")]
+    extern let buttonPressed: bool
+    var isDoubleClick: bool
+
+    displayStartScreen()
+
+    isDoubleClick = run PressToContinueController(buttonPressed, true)
+    if isDoubleClick then
+        return PRESENT_HELP
+    else
+        return PRESENT_PLAY
+    end
+end
+
+// Help Screen
+
+@[CFunction (source = "env.h")]
+extern function displayHelpScreen ()
+
+activity HelpScreen ()
+    @[CInput (binding ="buttonPressed", header = "env.h")]
+    extern let buttonPressed: bool
+
+    displayHelpScreen()
+
+    _ = run PressToContinueController(buttonPressed, true)
+end
+
+// Play Screen
+
+@[CFunction (source = "env.h")]
+extern function displayPlayStartScreen ()
+@[CFunction (source = "env.h")]
+extern function displayPlaySignalScreen ()
+        
+activity PlayStartScreen (buttonPressed: bool) (score: Score) returns bool
+    displayPlayStartScreen()
+
+    when buttonPressed abort
+        score.waitTime = makeRandomNat32(1000, 5000)
+        run Delay(score.waitTime)            
+        return true
+    end
+
+    score.state = SCORE_STATE_TOO_EARLY
+    return false
+end
+
+activity PlaySignalScreen (buttonPressed: bool) (score: Score)
+    var time: nat32
+    var didTimeOut: bool
+
+    displayPlaySignalScreen()
+
+    cobegin weak
+        await buttonPressed
+        score.reactionTime = time
+    with weak
+        run Timer()(time)  
+    with weak
+        run Delay(3000)        
+        didTimeOut = true
+    end    
+
+    if didTimeOut then
+        score.state = SCORE_STATE_TOO_LATE
+    else
+        score.state = SCORE_STATE_OK
+    end
+end
+
+activity PlayScreen () returns Score
+    @[CInput (binding ="buttonPressed", header = "env.h")]
+    extern let buttonPressed: bool
+    var score: Score
+    var isValid: bool
+    
+    run CountDownScreen(3)
+    
+    isValid = run PlayStartScreen(buttonPressed)(score)
+    if isValid then
+        run PlaySignalScreen(buttonPressed)(score)
+    end
+    
+    return score
+end
+
+// Result Screen
+
+@[CFunction (source = "env.h")]
+extern function displayResultIsValidScreen (score: Score)
+@[CFunction (source = "env.h")]
+extern function displayResultTooEarlyScreen ()
+@[CFunction (source = "env.h")]
+extern function displayResultTooLateScreen ()
+
+activity ResultScreen (score: Score)
+    @[CInput (binding ="buttonPressed", header = "env.h")]
+    extern let buttonPressed: bool
+
+    if score.state == SCORE_STATE_OK then
+        displayResultIsValidScreen(score)
+    elseif score.state == SCORE_STATE_TOO_EARLY then
+        displayResultTooEarlyScreen()
+    else
+        displayResultTooLateScreen()
+    end
+
+    _ = run PressToContinueController(buttonPressed, true)
+end
+
+// Highscore Screen
+        
+activity HighscoreScreen ()
+    // Not yet implemented.
+    await true
+end
+
+// Main
+
+@[EntryPoint]
+activity Main()
+    run SplashScreen()
+
+    repeat
+        var selection: nat8
+        selection = run StartScreen()
+
+        if selection == PRESENT_HELP then
+            run HelpScreen()
+        
+        elseif selection == PRESENT_PLAY then
+            var score: Score 
+            score = run PlayScreen()
+            run ResultScreen(score)
+            run HighscoreScreen()
+
+        elseif selection == PRESENT_HIGHSCORE then
+            run HighscoreScreen()
+        end
+    end
+end
