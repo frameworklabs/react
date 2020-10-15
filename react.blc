@@ -114,8 +114,9 @@ activity DimmDownController (buttonPressed: bool, waitTime: nat32, fadeTime: nat
     end
 end
 
-// When a button press comes, waits for a small duration to see whether a double click comes or not.
-activity DoubleClickController (buttonPressed: bool) returns bool // false for single click, true for double click
+/// When a button press occurs, waits for a small duration to see whether a double click follows or not.
+/// Returns false for single click, true for double click
+activity DoubleClickController (buttonPressed: bool) returns bool
     await buttonPressed
     when buttonPressed abort
         run Delay(300)
@@ -134,14 +135,14 @@ activity PressToContinueController (buttonPressed: bool, wantsDimming: bool) ret
         var didStartDimming: bool
 
         cobegin
-            isDoubleClick = run DoubleClickController(continueButtonPressed)
+            run isDoubleClick = DoubleClickController(continueButtonPressed)
         with weak
             run DimmDownController(buttonPressed, TIME_TO_FADE, FADE_DURATION)(didStartDimming)
         with weak
             run BoolGate(buttonPressed, not didStartDimming)(continueButtonPressed)
         end    
     else
-        isDoubleClick = run DoubleClickController(buttonPressed)
+        run isDoubleClick = DoubleClickController(buttonPressed)
     end
 
     return isDoubleClick
@@ -180,11 +181,10 @@ extern function displayStartScreen ()
 activity StartScreen () returns nat8
     @[CInput (binding ="buttonPressed", header = "env.h")]
     extern let buttonPressed: bool
-    var isDoubleClick: bool
 
     displayStartScreen()
 
-    isDoubleClick = run PressToContinueController(buttonPressed, true)
+    run let isDoubleClick = PressToContinueController(buttonPressed, true)
     if isDoubleClick then
         return PRESENT_HELP
     else
@@ -203,7 +203,7 @@ activity HelpScreen ()
 
     displayHelpScreen()
 
-    _ = run PressToContinueController(buttonPressed, true)
+    run _ = PressToContinueController(buttonPressed, true)
 end
 
 // Play Screen
@@ -253,11 +253,10 @@ activity PlayScreen () returns Score
     @[CInput (binding ="buttonPressed", header = "env.h")]
     extern let buttonPressed: bool
     var score: Score
-    var isValid: bool
     
     run CountDownScreen(3)
     
-    isValid = run PlayStartScreen(buttonPressed)(score)
+    run let isValid = PlayStartScreen(buttonPressed)(score)
     if isValid then
         run PlaySignalScreen(buttonPressed)(score)
     end
@@ -286,7 +285,7 @@ activity ResultScreen (score: Score)
         displayResultTooLateScreen()
     end
 
-    _ = run PressToContinueController(buttonPressed, true)
+    run _ = PressToContinueController(buttonPressed, true)
 end
 
 // Highscore Screen
@@ -303,15 +302,14 @@ activity Main()
     run SplashScreen()
 
     repeat
-        var selection: nat8
-        selection = run StartScreen()
+        run let selection = StartScreen()
 
         if selection == PRESENT_HELP then
             run HelpScreen()
         
         elseif selection == PRESENT_PLAY then
             var score: Score 
-            score = run PlayScreen()
+            run score = PlayScreen()
             run ResultScreen(score)
             run HighscoreScreen()
 
